@@ -11,9 +11,9 @@
 	],
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/YanzuoLu/pi-side-chat.git"
+		"url": "git+https://github.com/flymin/pi-side-chat.git"
 	},
-	"homepage": "https://github.com/YanzuoLu/pi-side-chat#readme",
+	"homepage": "https://github.com/flymin/pi-side-chat#readme",
 	"pi": {
 		"extensions": [
 			"./src/index.ts"

@@ -2,9 +2,14 @@
 
 Codex's `/side` conversations for [Pi](https://pi.dev).
 
+This fork of [YanzuoLu/pi-side-chat](https://github.com/YanzuoLu/pi-side-chat)
+adds configurable shortcuts while preserving the original default bindings.
+
 `/side` forks the current conversation into a side conversation, so you can ask a quick question without disturbing the main thread, even while it is working.
 
 ## Usage
+
+The table below shows the default shortcuts. They can be changed in [Shortcut settings](#shortcut-settings).
 
 | Input | Effect |
 |---|---|
@@ -32,6 +37,60 @@ By default the side conversation's own model and thinking level write the handof
 
 `model` is `provider/model-id`. `null` or a missing setting keeps the side conversation's own.
 
+## Shortcut settings
+
+Configure shortcuts in `<Pi agent directory>/pi-side-chat.json`, normally
+`~/.pi/agent/pi-side-chat.json`. This is the same file as the optional `handoff`
+settings; both sections can coexist.
+
+For example, replace Shift+arrows with Ctrl+comma/period:
+
+```json
+{
+  "shortcuts": {
+    "previous": "ctrl+,",
+    "next": "ctrl+."
+  }
+}
+```
+
+Each action accepts a key string or a list of alternatives, such as
+`"previous": ["ctrl+,", "alt+h"]`. Every alternative works, but hints display
+**only the first key of each action**. The navigation hint combines the first
+previous/next keys compactly. An empty list (`[]`) disables an action and hides
+its hint; omitted or `null` settings preserve its default. Overrides replace,
+rather than extend, the defaults, so include the original key in the list if
+you want to keep it.
+
+| Action | Default |
+|---|---|
+| `toggle` | `["ctrl+/", "ctrl+7"]` |
+| `previous` | `["shift+left"]` |
+| `next` | `["shift+right"]` |
+| `handoff` | `["ctrl+s"]` |
+| `close` | `["ctrl+c"]` — only closes with an empty editor |
+| `interrupt` | `["escape"]` — stops the side turn or shell command |
+| `cycleThinking` | Inherits Pi's `app.thinking.cycle` |
+| `nextModel` | Inherits Pi's `app.model.cycleForward` |
+| `previousModel` | Inherits Pi's `app.model.cycleBackward` |
+| `selectModel` | Inherits Pi's `app.model.select` |
+| `dequeue` | Inherits Pi's `app.message.dequeue` |
+
+The last five actions can also be overridden here. Without an override, they
+continue to follow Pi's `keybindings.json`, including changes to those bindings.
+Other native Pi editor shortcuts remain under Pi's own configuration.
+
+Keys use Pi's syntax (`ctrl`, `alt`, `shift`, `super`, letters, digits, symbols,
+arrows, and function keys). Modifier order and capitalization are normalized.
+Unknown actions, malformed keys, or the same normalized key assigned to multiple
+side actions reject the shortcut section: the extension reports an error and
+uses all defaults rather than applying a partial configuration. This cannot
+detect every terminal-level alias or conflict with another extension, tmux, or
+Pi's inherited keys; choose bindings that your terminal actually reports.
+
+Shortcuts are read at session start. Run `/reload` after editing this file.
+Changing shortcuts does not change permissions or side-conversation behavior.
+
 ## Behavior
 
 - The side conversation starts from the main thread's history so far, with the same model, thinking level, tools and extensions. Its requests share the main thread's prompt cache: for OpenAI models it uses the main thread's session id as its cache key, also when resumed later.
@@ -48,7 +107,7 @@ By default the side conversation's own model and thinking level write the handof
 ## Install
 
 ```sh
-pi install git:github.com/YanzuoLu/pi-side-chat
+pi install git:github.com/flymin/pi-side-chat
 ```
 
 ## Compatibility

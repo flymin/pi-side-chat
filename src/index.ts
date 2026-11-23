@@ -27,18 +27,17 @@ import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 import { type SideEvent, SideProcess, type SideProcessOptions, type SideState } from "./child.ts";
 import {
 	SIDE_NO_STARTED_CONVERSATION_MESSAGE,
-	SIDE_SLASH_COMMAND_UNAVAILABLE_HINT,
 	SIDE_STARTING_CONTEXT_LABEL,
 } from "./codex.ts";
 import { forkSide, hasStarted, sideOpening, sideOrigin } from "./fork.ts";
 import { firstUserMessage, handoffMessage, handoffPrompt, readHandoffConfig } from "./handoff.ts";
+import {
+	cancelBashHint, DEFAULT_SHORTCUTS, defaultShortcuts, INHERITED_SHORTCUT_ACTIONS,
+	matchesShortcut, readShortcuts, returnToMainHint, type ShortcutAction, shortcutLabel, switchLabel,
+} from "./shortcuts.ts";
 import { findInteractiveMode, SideView } from "./view.ts";
 
 const KEY = "side-chat";
-const TOGGLE_LABEL = "ctrl+/";
-const SWITCH_LABEL = "shift+←/→";
-const CLOSE_LABEL = "ctrl+c";
-const HANDOFF_LABEL = "ctrl+s";
 const HANDING_OFF_LABEL = "Side summarizing...";
 const CONFIG_FILE = "pi-side-chat.json";
 const COMMANDS = ["side", "btw"];
@@ -103,6 +102,7 @@ export default function sideChat(pi: ExtensionAPI): void {
 	let stopKeys: (() => void) | undefined;
 	/** Whether this session is being left, which keeps its record of open side conversations as it is. */
 	let leaving = false;
+	let shortcuts = defaultShortcuts();
 
 	const shown = () => sides.find((side) => side.view.visible);
 	/** The side conversations one can switch to: those running and not writing a handoff. */
@@ -120,24 +120,32 @@ export default function sideChat(pi: ExtensionAPI): void {
 		if (!ctx) return;
 		const open = switchable();
 		const current = shown();
+		const toggleKey = shortcutLabel(shortcuts, "toggle");
+		const switchKeys = switchLabel(shortcuts);
+		const handoffKey = shortcutLabel(shortcuts, "handoff");
+		const closeKey = shortcutLabel(shortcuts, "close");
 		let text = label;
 		if (!text && current) {
 			const index = open.indexOf(current) + 1;
 			const parts = [open.length > 1 ? `${index}/${open.length} from main thread` : "from main thread"];
 			if (current.parentStatus) parts.push(current.parentStatus);
-			parts.push(
-				open.length > 1 ? `${SWITCH_LABEL} to switch` : `${TOGGLE_LABEL} to switch`,
-				`${HANDOFF_LABEL} to hand off`,
-				`${CLOSE_LABEL} to close`,
-				// The id to resume the side conversation with later, in any window.
-				current.id,
-			);
+			const switchKey = open.length > 1 ? switchKeys ?? toggleKey : toggleKey ?? switchKeys;
+			if (switchKey) parts.push(`${switchKey} to switch`);
+			if (handoffKey) parts.push(`${handoffKey} to hand off`);
+			if (closeKey) parts.push(`${closeKey} to close`);
+			// The id to resume the side conversation with later, in any window.
+			parts.push(current.id);
 			text = `Side ${parts.join(" · ")}`;
 		} else if (!text) {
 			const parts: string[] = [];
 			if (sides.some((side) => side.handingOff)) parts.push(HANDING_OFF_LABEL);
-			if (open.length === 1) parts.push(`${TOGGLE_LABEL} for side`);
-			if (open.length > 1) parts.push(`${open.length} sides`, `${SWITCH_LABEL} to switch`);
+			const singleSwitchKey = toggleKey ?? switchKeys;
+			if (open.length === 1 && singleSwitchKey) parts.push(`${singleSwitchKey} for side`);
+			if (open.length > 1) {
+				parts.push(`${open.length} sides`);
+				const multiSwitchKey = switchKeys ?? toggleKey;
+				if (multiSwitchKey) parts.push(`${multiSwitchKey} to switch`);
+			}
 			text = parts.join(" · ") || undefined;
 		}
 		ctx.ui.setWidget(KEY, text ? [ctx.ui.theme.fg("dim", text)] : undefined);
@@ -184,7 +192,7 @@ export default function sideChat(pi: ExtensionAPI): void {
 			return;
 		}
 		if (command !== undefined && !current.commands.has(command)) {
-			notifyError(`'/${command}' is unavailable in side conversations. ${SIDE_SLASH_COMMAND_UNAVAILABLE_HINT}`);
+			notifyError(`'/${command}' is unavailable in side conversations. ${returnToMainHint(shortcuts)}`);
 			return;
 		}
 		// `!command` runs in the side's shell like Pi's, `!!command` keeps its output out of the model's context.
@@ -193,7 +201,7 @@ export default function sideChat(pi: ExtensionAPI): void {
 			const bash = text.slice(excluded ? 2 : 1).trim();
 			if (bash) {
 				if (current.view.runningBash) {
-					current.view.notify("A bash command is already running. Press Esc to cancel it first.", "warning");
+					current.view.notify(`A bash command is already running. ${cancelBashHint(shortcuts)}`, "warning");
 					ctx.ui.setEditorText(text);
 					return;
 				}
@@ -389,13 +397,15 @@ export default function sideChat(pi: ExtensionAPI): void {
 		// Terminals with the kitty keyboard protocol also report releases, which would act a second time.
 		if (open.length === 0 || !ctx || isKeyRelease(data)) return undefined;
 		const current = shown();
-		if (matchesKey(data, "ctrl+/") || matchesKey(data, "ctrl+7")) {
+		const matches = (action: ShortcutAction) => matchesShortcut(data, shortcuts, action,
+			(appAction) => open[0]!.view.matches(data, appAction));
+		if (matches("toggle")) {
 			if (current) hide(current);
 			else show(last && open.includes(last) ? last : open.at(-1)!);
 			return { consume: true };
 		}
 		if (!open[0]!.view.editorFocused) return undefined;
-		const step = matchesKey(data, "shift+right") ? 1 : matchesKey(data, "shift+left") ? -1 : 0;
+		const step = matches("next") ? 1 : matches("previous") ? -1 : 0;
 		if (step !== 0) {
 			// Position 0 is the main thread, then the side conversations in the order they opened.
 			const at = current ? open.indexOf(current) + 1 : 0;
@@ -405,38 +415,45 @@ export default function sideChat(pi: ExtensionAPI): void {
 			return { consume: true };
 		}
 		if (!current) return undefined;
-		if (matchesKey(data, "ctrl+s")) {
+		if (matches("handoff")) {
 			void handOff(current);
 			return { consume: true };
 		}
-		if (matchesKey(data, "ctrl+c") && ctx.ui.getEditorText() === "") {
+		if (matches("close") && ctx.ui.getEditorText() === "") {
 			void close(current);
 			return { consume: true };
 		}
 		// Pi's keys for the conversation shown act on the side conversation here, never on the hidden parent.
 		const report = (error: Error) => notifyError(error.message);
-		if (matchesKey(data, "escape")) {
+		if (matches("interrupt")) {
 			if (!current.streaming && current.view.runningBash) current.process!.abortBash().catch(report);
 			else restoreQueue(current, true).catch(report);
 			return { consume: true };
 		}
-		if (current.view.matches(data, "app.thinking.cycle")) {
+		if (matches("cycleThinking")) {
 			current.view.cycleThinkingLevel().catch(report);
 			return { consume: true };
 		}
-		if (current.view.matches(data, "app.model.cycleForward") || current.view.matches(data, "app.model.cycleBackward")) {
-			const direction = current.view.matches(data, "app.model.cycleForward") ? "forward" : "backward";
+		if (matches("nextModel") || matches("previousModel")) {
+			const direction = matches("nextModel") ? "forward" : "backward";
 			current.view.cycleModel(direction).catch(report);
 			return { consume: true };
 		}
-		if (current.view.matches(data, "app.model.select")) {
+		if (matches("selectModel")) {
 			current.view.selectModel();
 			return { consume: true };
 		}
-		if (current.view.matches(data, "app.message.dequeue")) {
+		if (matches("dequeue")) {
 			restoreQueue(current, false).catch((error: Error) => notifyError(error.message));
 			return { consume: true };
 		}
+		// Retired side controls must not fall through and act on the hidden main session.
+		const retiredControl = (["interrupt", "handoff"] as const)
+			.some((action) => DEFAULT_SHORTCUTS[action].some((key) => matchesKey(data, key))) ||
+			(ctx.ui.getEditorText() === "" && DEFAULT_SHORTCUTS.close.some((key) => matchesKey(data, key)));
+		const retiredAppControl = Object.entries(INHERITED_SHORTCUT_ACTIONS)
+			.some(([action, appAction]) => shortcuts[action as ShortcutAction] !== undefined && current.view.matches(data, appAction));
+		if (retiredControl || retiredAppControl) return { consume: true };
 		return undefined;
 	};
 
@@ -484,6 +501,12 @@ export default function sideChat(pi: ExtensionAPI): void {
 		ctx = context;
 		leaving = false;
 		parentSessionId = sideOrigin(context.sessionManager.getEntries())?.parentSessionId;
+		shortcuts = defaultShortcuts();
+		try {
+			shortcuts = readShortcuts(join(getAgentDir(), CONFIG_FILE));
+		} catch (error) {
+			context.ui.notify(`Invalid side-chat shortcuts; using defaults: ${(error as Error).message}`, "error");
+		}
 		if (context.mode !== "tui") return;
 		stopKeys = context.ui.onTerminalInput(handleKey);
 		if (context.model) restore(context).catch((error: Error) => notifyError(`Failed to reopen side conversations: ${error.message}`));
