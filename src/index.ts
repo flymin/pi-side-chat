@@ -42,6 +42,7 @@ const KEY = "side-chat";
 const HANDING_OFF_LABEL = "Side summarizing...";
 const CONFIG_FILE = "pi-side-chat.json";
 const COMMANDS = ["side", "btw"];
+const VIEW_COMMANDS = ["copy", "export", "model", "thinking", "scoped-models", "models"];
 /** Custom entry type in the main session that lists its open, saved side conversations. */
 const OPEN_SIDES_TYPE = "side-chat-open";
 
@@ -233,6 +234,11 @@ export default function sideChat(pi: ExtensionAPI): void {
 			open(ctx, text.slice(command.length + 1).trim()).catch((error: Error) => notifyError(error.message));
 			return;
 		}
+		if (command !== undefined && VIEW_COMMANDS.includes(command)) {
+			current.view.runCommand(command, text.slice(command.length + 1).trim())
+				.catch((error: Error) => notifyError(error.message));
+			return;
+		}
 		if (command !== undefined && !current.commands.has(command)) {
 			notifyError(`'/${command}' is unavailable in side conversations. ${returnToMainHint(shortcuts)}`);
 			return;
@@ -312,7 +318,7 @@ export default function sideChat(pi: ExtensionAPI): void {
 			await current.process.close();
 			return false;
 		}
-		view.attach(current.process, [...current.commands, ...COMMANDS]);
+		view.attach(current.process, [...current.commands, ...COMMANDS, ...VIEW_COMMANDS]);
 		if (model) show(current);
 		else updateLabel();
 		if (message) submit(current, message);

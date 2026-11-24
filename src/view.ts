@@ -66,6 +66,11 @@ type Interactive = {
 	showStatus(message: string): void;
 	cycleModel(direction: "forward" | "backward"): Promise<void>;
 	showModelSelector(initialSearchInput?: string): void;
+	handleModelCommand(searchTerm: string): Promise<void>;
+	handleThinkingCommand(searchTerm: string): void;
+	handleCopyCommand(): Promise<void>;
+	handleExportCommand(text: string): Promise<void>;
+	showModelsSelector(): void;
 	handleBashCommand(command: string, excludeFromContext?: boolean): Promise<void>;
 	flushPendingBashComponents(): void;
 };
@@ -79,6 +84,7 @@ export interface SideSource {
 	cycleThinkingLevel(): Promise<string | undefined>;
 	bash(command: string, excludeFromContext: boolean, onOutput: (delta: string) => void): Promise<BashResult>;
 	abortBash(): Promise<void>;
+	exportHtml(outputPath?: string): Promise<string>;
 }
 
 export interface BashResult {
@@ -154,7 +160,8 @@ export function findInteractiveMode(ctx: ExtensionContext, statusKey: string): I
 		typeof mode.keybindings?.matches !== "function" ||
 		typeof mode.settingsManager?.setDefaultModelAndProvider !== "function" ||
 		typeof mode.editor?.setAutocompleteProvider !== "function" ||
-		!["updateEditorBorderColor", "showStatus", "cycleModel", "showModelSelector", "handleBashCommand", "flushPendingBashComponents"]
+		!["updateEditorBorderColor", "showStatus", "cycleModel", "showModelSelector", "handleBashCommand", "flushPendingBashComponents",
+			"handleCopyCommand", "handleExportCommand", "handleModelCommand", "handleThinkingCommand", "showModelsSelector"]
 			.every((method) => typeof (prototype as unknown as Record<string, unknown>)[method] === "function") ||
 		!writable("footerContainer") ||
 		typeof mode.footer?.render !== "function" ||
@@ -350,6 +357,7 @@ export class SideView {
 	/** The slash commands the side runs, which its editor completes. */
 	private commandNames = new Set<string>();
 	private source: SideSource | undefined;
+	private scopedModels: ScopedModel[];
 	private drawing = Promise.resolve();
 	private disposed = false;
 
@@ -361,6 +369,7 @@ export class SideView {
 		fork: readonly FileEntry[],
 		state: Omit<SideState, "autoCompactionEnabled">,
 	) {
+		this.scopedModels = [...(mode.session as unknown as { scopedModels: ScopedModel[] }).scopedModels];
 		this.stage = Stage.for(mode);
 		this.header = fork[0] as SessionHeader;
 		this.entries = fork.slice(1) as SessionEntry[];
@@ -384,6 +393,10 @@ export class SideView {
 			state: { get: () => view.state },
 			model: { get: () => view.state.model },
 			thinkingLevel: { get: () => view.state.thinkingLevel },
+			messages: { get: () => view.session.buildSessionContext().messages },
+			scopedModels: { get: () => view.scopedModels },
+			setScopedModels: own((models: ScopedModel[]) => { view.scopedModels = [...models]; }),
+			exportToHtml: own((path?: string) => view.source!.exportHtml(path)),
 			autoCompactionEnabled: { get: () => view.state.autoCompactionEnabled },
 			retryAttempt: { get: () => view.retryAttempt },
 			getContextUsage: own((): ContextUsage | undefined => view.state.contextUsage),
@@ -433,6 +446,18 @@ export class SideView {
 			entriesRenderedByBoundaryCompaction: own(new Set()),
 			lastStatusText: own(undefined),
 			lastStatusSpacer: own(undefined),
+			// Pi's thinking selector calls a synchronous session setter. Await the RPC instead,
+			// so errors cannot escape and the footer reflects the child's clamped level.
+			selectThinkingLevel: own((level: string, persist: boolean) => {
+				void (async () => {
+					await view.source!.setThinkingLevel(level);
+					await view.refreshState();
+					if (persist) (mode.settingsManager as unknown as { setDefaultThinkingLevel(level: string): void })
+						.setDefaultThinkingLevel(view.state.thinkingLevel);
+					view.updateBorder();
+					view.renderer.showStatus(`Thinking level: ${view.state.thinkingLevel}`);
+				})().catch((error: Error) => view.notify(error.message, "error"));
+			}),
 			// Esc is handled by the side conversation itself, which stops whatever it is doing.
 			defaultEditor: own({ onEscape: undefined, setWorkingStatusIndicator() {} }),
 			setEditorWorkingStatusIndicator: own((indicator: Indicator | undefined) => {
@@ -526,9 +551,13 @@ export class SideView {
 			getSuggestions: async (lines, cursorLine, cursorCol, options) => {
 				const suggestions = await base.getSuggestions(lines, cursorLine, cursorCol, options);
 				const before = (lines[cursorLine] ?? "").slice(0, cursorCol);
-				if (!suggestions || !before.startsWith("/") || before.includes(" ")) return suggestions;
-				const items = suggestions.items.filter((item) => this.commandNames.has(item.value));
-				return items.length > 0 ? { ...suggestions, items } : null;
+				if (!before.startsWith("/") || before.includes(" ")) return suggestions;
+				const items = suggestions?.items.filter((item) => this.commandNames.has(item.value)) ?? [];
+				// /models is a side alias; Pi's base provider may not list it.
+				if (this.commandNames.has("models") && "models".startsWith(before.slice(1)) && !items.some((item) => item.value === "models")) {
+					items.push({ value: "models", label: "/models", description: "Configure side model scope" });
+				}
+				return items.length > 0 ? { prefix: suggestions?.prefix ?? before, items } : null;
 			},
 		};
 	}
@@ -555,6 +584,21 @@ export class SideView {
 		this.renderer.showModelSelector();
 	}
 
+	/** Built-ins explicitly routed to this view, never submitted as model prompts. */
+	async runCommand(command: string, args: string): Promise<void> {
+		await this.drawing;
+		if (this.disposed) return;
+		await this.sync();
+		switch (command) {
+			case "copy": await this.renderer.handleCopyCommand(); break;
+			case "export": await this.renderer.handleExportCommand(`/export${args ? ` ${args}` : ""}`); break;
+			case "model": await this.renderer.handleModelCommand(args); break;
+			case "thinking": this.renderer.handleThinkingCommand(args); break;
+			case "models":
+			case "scoped-models": this.renderer.showModelsSelector(); break;
+		}
+	}
+
 	/** Runs a `!` command in the side session and draws it as Pi does. */
 	runBash(command: string, excludeFromContext: boolean): Promise<void> {
 		return this.renderer.handleBashCommand(command, excludeFromContext);
@@ -576,9 +620,9 @@ export class SideView {
 		};
 		const available = session.modelRuntime.getAvailableSnapshot();
 		const ids = new Set(available.map((model) => `${model.provider}\0${model.id}`));
-		const scoped = session.scopedModels.length > 0;
+		const scoped = this.scopedModels.length > 0;
 		const candidates: ScopedModel[] = scoped
-			? session.scopedModels.filter((entry) => ids.has(`${entry.model.provider}\0${entry.model.id}`))
+			? this.scopedModels.filter((entry) => ids.has(`${entry.model.provider}\0${entry.model.id}`))
 			: available.map((model) => ({ model }));
 		if (candidates.length <= 1) return undefined;
 		const current = this.state.model;
@@ -592,6 +636,7 @@ export class SideView {
 
 	private async refreshState(): Promise<void> {
 		this.state = await this.source!.state();
+		this.footer.invalidate?.();
 		this.mode.ui.requestRender();
 	}
 

@@ -27,7 +27,9 @@ vi.mock("../src/view.ts", () => ({
 		editorFocused = true;
 		runningBash = false;
 		constructor(..._args: unknown[]) { state.views.push(this); }
-		show = vi.fn(() => { for (const view of state.views) view.visible = false; this.visible = true; });
+		show = vi.fn((submit?: (text: string) => void) => { this.submit = submit; for (const view of state.views) view.visible = false; this.visible = true; });
+		submit?: (text: string) => void;
+		runCommand = vi.fn(async () => {});
 		hide = vi.fn(() => { this.visible = false; });
 		dispose = vi.fn(() => { this.visible = false; });
 		attach = vi.fn();
@@ -93,6 +95,17 @@ function deferred() {
 	const promise = new Promise<boolean>((done) => { resolve = done; });
 	return { promise, resolve };
 }
+
+describe("side built-in command routing", () => {
+	it.each(["copy", "export", "model", "thinking", "scoped-models", "models"])("routes /%s locally, not to the model", async (command) => {
+		const h = await harness(); h.show();
+		state.views[1].submit(`/${command} argument`);
+		expect(state.views[1].runCommand).toHaveBeenCalledWith(command, "argument");
+		expect(state.processes[1].prompt).not.toHaveBeenCalled();
+		expect(state.views[0].runCommand).not.toHaveBeenCalled();
+		expect(state.views[1].attach.mock.calls[0][1]).toContain(command);
+	});
+});
 
 describe("confirmed side deletion", () => {
 	it("stops before deleting only the shown side, returns to main, and updates the roster", async () => {

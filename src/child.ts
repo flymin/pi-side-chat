@@ -121,6 +121,12 @@ export class SideProcess implements SideSource {
 		await this.request({ type: "set_model", provider, modelId });
 	}
 
+	/** Export using the child runtime, including its own extension renderers. */
+	async exportHtml(outputPath?: string): Promise<string> {
+		const data = await this.request({ type: "export_html", outputPath }) as { path: string };
+		return data.path;
+	}
+
 	/** The next thinking level, or undefined if the model does not think. */
 	async cycleThinkingLevel(): Promise<string | undefined> {
 		const data = (await this.request({ type: "cycle_thinking_level" })) as { level: string } | null;

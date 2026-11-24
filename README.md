@@ -118,7 +118,10 @@ Changing shortcuts does not change permissions or side-conversation behavior.
 - The side conversation runs in its own Pi process. Its extensions cannot interfere with the main thread's, and closing it ends anything it started.
 - Like switching threads in Codex, switching swaps everything that belongs to a conversation: the transcript, the working and compaction indicators, the footer and the editor's draft. Pi draws all of it, so the side conversation looks the same as the main thread.
 - Extension dialogs, notifications and footer status entries from the side conversation show up in Pi. Its widgets are dropped.
-- Slash commands that the side conversation cannot run itself are unavailable there, as in Codex, and the editor only completes the ones it can.
+- `/copy` copies the side's last assistant response. `/export [path]` exports the side session as HTML (default) or JSONL (`.jsonl` path), with Pi's normal quoted-path support.
+- `/model [provider/model]` and `/thinking [level]` select the side's own model and thinking level; omitting the argument opens Pi's selector. The main session is unchanged unless you explicitly save a global default.
+- `/scoped-models` and its side alias `/models` open the same model-scope selector. Scope changes apply to this side's picker and cycling keys, independently of the main session and other sides, for the lifetime of the view. Explicitly saving defaults updates shared settings as in Pi.
+- Other built-in interactive slash commands remain unavailable. Extension commands, templates and skills loaded by the side are still forwarded to its process.
 - Pi's keys and input for the conversation shown act on the side conversation while it is shown: `!command` and `!!command` run in its shell, `shift + tab` cycles its thinking level, the model cycling keys and `ctrl + l` change its model, `esc` and `option + up` handle its queued messages, and the editor's border shows its thinking level.
 
 `ctrl + /` needs a terminal that reports it, such as one with the kitty keyboard protocol.
