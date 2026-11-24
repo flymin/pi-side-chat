@@ -6,6 +6,7 @@
  * side instructions follow the inherited history, so the model answers questions without continuing
  * the parent's work. Each `/side` opens another one. Ctrl+/ switches between the main thread and the
  * side conversation shown last, Shift+Left and Shift+Right through all of them, without closing any.
+ * Ctrl+D confirms deletion of the side conversation shown and returns to the main thread.
  * Ctrl+C on an empty editor closes the side conversation shown. Ctrl+S closes it too, after it writes a handoff of what happened
  * in it, which is steered into the main thread. A side conversation the user asked something in is
  * saved as a session of its own, which `pi --session <id>` resumes like any other. Saved side
@@ -66,6 +67,8 @@ type Side = {
 	asked: boolean;
 	/** Whether the side conversation is writing its handoff. */
 	handingOff: boolean;
+	/** Whether a confirmed deletion is stopping this side process. */
+	deleting: boolean;
 	/** How the parent's turn ended while the side conversation was open, as Codex labels it. */
 	parentStatus?: string;
 };
@@ -90,6 +93,7 @@ function newSide(
 		opening,
 		asked: false,
 		handingOff: false,
+		deleting: false,
 	};
 }
 
@@ -103,10 +107,11 @@ export default function sideChat(pi: ExtensionAPI): void {
 	/** Whether this session is being left, which keeps its record of open side conversations as it is. */
 	let leaving = false;
 	let shortcuts = defaultShortcuts();
+	let pendingDelete: Side | undefined;
 
 	const shown = () => sides.find((side) => side.view.visible);
 	/** The side conversations one can switch to: those running and not writing a handoff. */
-	const switchable = () => sides.filter((side) => side.process && !side.handingOff);
+	const switchable = () => sides.filter((side) => side.process && !side.handingOff && !side.deleting);
 
 	/** Errors about a side conversation go to whichever transcript is shown. */
 	const notifyError = (message: string) => {
@@ -124,6 +129,7 @@ export default function sideChat(pi: ExtensionAPI): void {
 		const switchKeys = switchLabel(shortcuts);
 		const handoffKey = shortcutLabel(shortcuts, "handoff");
 		const closeKey = shortcutLabel(shortcuts, "close");
+		const deleteKey = shortcutLabel(shortcuts, "delete");
 		let text = label;
 		if (!text && current) {
 			const index = open.indexOf(current) + 1;
@@ -133,12 +139,14 @@ export default function sideChat(pi: ExtensionAPI): void {
 			if (switchKey) parts.push(`${switchKey} to switch`);
 			if (handoffKey) parts.push(`${handoffKey} to hand off`);
 			if (closeKey) parts.push(`${closeKey} to close`);
+			if (deleteKey) parts.push(`${deleteKey} to delete`);
 			// The id to resume the side conversation with later, in any window.
 			parts.push(current.id);
 			text = `Side ${parts.join(" · ")}`;
 		} else if (!text) {
 			const parts: string[] = [];
 			if (sides.some((side) => side.handingOff)) parts.push(HANDING_OFF_LABEL);
+			if (sides.some((side) => side.deleting)) parts.push("Side deleting...");
 			const singleSwitchKey = toggleKey ?? switchKeys;
 			if (open.length === 1 && singleSwitchKey) parts.push(`${singleSwitchKey} for side`);
 			if (open.length > 1) {
@@ -179,6 +187,40 @@ export default function sideChat(pi: ExtensionAPI): void {
 		if (current.temporary) rmSync(current.temporary, { recursive: true, force: true });
 		else if (!current.asked) rmSync(current.sessionFile, { force: true });
 		else if (!leaving && !told) ctx?.ui.notify(endNotice(current, "Side conversation saved"), "info");
+	};
+
+	/** Delete only after confirmation and observed process shutdown; never delete the shared session directory. */
+	const deleteSide = async (current: Side) => {
+		const context = ctx;
+		if (!context || leaving || pendingDelete || current.handingOff || current.deleting) return;
+		pendingDelete = current;
+		let stopped = false;
+		try {
+			const confirmed = await context.ui.confirm("Delete side conversation?",
+				`Permanently delete side session ${current.id} and return to the main thread? Its saved history and unsent draft will be lost. No handoff will be sent.`);
+			// A dialog can outlive a session switch or a change of the side view.
+			if (!confirmed || ctx !== context || leaving || !sides.includes(current) || shown() !== current || current.handingOff) return;
+			current.deleting = true;
+			hide(current);
+			await current.process?.close();
+			stopped = true;
+			if (ctx !== context || leaving || !sides.includes(current)) return;
+			rmSync(current.sessionFile, { force: true });
+			await close(current, true);
+			if (ctx === context && !leaving) context.ui.notify(`Side conversation deleted: ${current.id}`, "info");
+		} catch (error) {
+			// If removal failed after stopping, forget the dead view but keep its file resumable.
+			if (stopped && ctx === context && !leaving && sides.includes(current)) {
+				try { await close(current, true); } catch (cleanupError) {
+					context.ui.notify(`Failed to close deleted side view: ${(cleanupError as Error).message}`, "error");
+				}
+			}
+			if (ctx === context && !leaving) context.ui.notify(`Failed to delete side conversation ${current.id}: ${(error as Error).message}`, "error");
+		} finally {
+			current.deleting = false;
+			if (pendingDelete === current) pendingDelete = undefined;
+			if (ctx === context && !leaving) updateLabel();
+		}
 	};
 
 	const submit = (current: Side, text: string) => {
@@ -415,6 +457,10 @@ export default function sideChat(pi: ExtensionAPI): void {
 			return { consume: true };
 		}
 		if (!current) return undefined;
+		if (matches("delete")) {
+			void deleteSide(current);
+			return { consume: true };
+		}
 		if (matches("handoff")) {
 			void handOff(current);
 			return { consume: true };
@@ -448,7 +494,7 @@ export default function sideChat(pi: ExtensionAPI): void {
 			return { consume: true };
 		}
 		// Retired side controls must not fall through and act on the hidden main session.
-		const retiredControl = (["interrupt", "handoff"] as const)
+		const retiredControl = (["interrupt", "handoff", "delete"] as const)
 			.some((action) => DEFAULT_SHORTCUTS[action].some((key) => matchesKey(data, key))) ||
 			(ctx.ui.getEditorText() === "" && DEFAULT_SHORTCUTS.close.some((key) => matchesKey(data, key)));
 		const retiredAppControl = Object.entries(INHERITED_SHORTCUT_ACTIONS)

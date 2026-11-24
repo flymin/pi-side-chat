@@ -19,11 +19,29 @@ The table below shows the default shortcuts. They can be changed in [Shortcut se
 | `shift + ←` / `shift + →` | Go through the main thread and every open side conversation in order |
 | `ctrl + s` | Hand off: close the side conversation shown after it writes a handoff, which is steered into the main thread |
 | `ctrl + c` on an empty editor | Close the side conversation shown and return to the main thread |
+| `ctrl + d` | Confirm deletion of the side conversation shown, then return to the main thread |
 | `esc` | Stop the side conversation's current turn, putting its queued messages back in the editor as Pi does |
 
 Each `/side` opens another side conversation forked from the main thread, also when typed in a side conversation. Each runs as its own Pi process, so many open ones take memory. Once you ask something in it, it is saved as a session of its own next to the main thread's, and the line above the editor ends with its session id. Closing it shows the id again, and `pi --session <id>` resumes it in any window. A side conversation where you asked nothing is not kept.
 
 Saved side conversations that are still open when you leave the main session, by quitting, `/reload`, `/new` or switching sessions, come back with it: they open again in the background, with their transcript, the next time the main session starts, and `shift + ←/→` or `ctrl + /` switches to them.
+
+## Delete a side conversation
+
+Press `ctrl + d` while a side conversation is shown to open a confirmation dialog.
+Cancel keeps its process, history and draft. Confirm returns to the main thread,
+stops the side process, then permanently deletes its session file and removes it
+from the parent's open-side list. This works even with text in the editor.
+No handoff is sent, and the main session and other sides are not deleted.
+Files the side conversation edited in the workspace are not reverted or deleted.
+If stopping fails, history is kept; if file removal fails, the stopped view closes
+but its history is retained for resuming. Deletion is cancelled if the parent
+session or shown target changes before it can safely proceed.
+
+`ctrl + c` and `ctrl + s` still close without deleting saved history. In the main
+view, `ctrl + d` keeps Pi's normal behavior; it never deletes a background side.
+The new `delete` action is configurable like every other side shortcut, including
+multiple alternatives and `[]` to disable it. Hints show its first configured key.
 
 ## Handoff
 
@@ -69,6 +87,7 @@ you want to keep it.
 | `next` | `["shift+right"]` |
 | `handoff` | `["ctrl+s"]` |
 | `close` | `["ctrl+c"]` — only closes with an empty editor |
+| `delete` | `["ctrl+d"]` — confirm permanent deletion and return to main |
 | `interrupt` | `["escape"]` — stops the side turn or shell command |
 | `cycleThinking` | Inherits Pi's `app.thinking.cycle` |
 | `nextModel` | Inherits Pi's `app.model.cycleForward` |

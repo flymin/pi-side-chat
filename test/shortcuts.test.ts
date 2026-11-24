@@ -23,7 +23,7 @@ describe("shortcut configuration", () => {
 	it("preserves all original defaults, without fixing Pi's configurable bindings", () => {
 		expect(parseShortcuts(undefined)).toEqual({
 			toggle: ["ctrl+/", "ctrl+7"], previous: ["shift+left"], next: ["shift+right"],
-			handoff: ["ctrl+s"], close: ["ctrl+c"], interrupt: ["escape"],
+			handoff: ["ctrl+s"], close: ["ctrl+c"], delete: ["ctrl+d"], interrupt: ["escape"],
 		});
 		expect(readShortcuts("/nonexistent/pi-side-shortcuts.json")).toEqual(defaultShortcuts());
 		expect(readShortcuts(config('{"handoff":{"thinking":"low"}}'))).toEqual(defaultShortcuts());
@@ -97,6 +97,15 @@ describe("shortcut matching", () => {
 });
 
 describe("shortcut hints", () => {
+	it("supports default and multiple delete bindings, with only the first hint", () => {
+		expect(matchesShortcut("\x04", defaultShortcuts(), "delete")).toBe(true);
+		const bindings = parseShortcuts({ delete: ["f5", "ctrl+d"] });
+		expect(matchesShortcut("\x1b[15~", bindings, "delete")).toBe(true);
+		expect(matchesShortcut("\x04", bindings, "delete")).toBe(true);
+		expect(shortcutLabel(bindings, "delete")).toBe("f5");
+		expect(matchesShortcut("\x04", parseShortcuts({ delete: [] }), "delete")).toBe(false);
+		expect(shortcutLabel(parseShortcuts({ delete: [] }), "delete")).toBeUndefined();
+	});
 	it("preserves the default compact navigation hint", () => {
 		expect(switchLabel(defaultShortcuts())).toBe("shift+←/→");
 		expect(shortcutLabel(defaultShortcuts(), "toggle")).toBe("ctrl+/");

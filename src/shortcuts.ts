@@ -8,6 +8,7 @@ export const DEFAULT_SHORTCUTS = {
 	next: ["shift+right"],
 	handoff: ["ctrl+s"],
 	close: ["ctrl+c"],
+	delete: ["ctrl+d"],
 	interrupt: ["escape"],
 } satisfies Record<string, readonly KeyId[]>;
 
